@@ -11,22 +11,22 @@ const http = require('http');
 const httpProxy = require('http-proxy');
 
 // 环境变量配置
-const UPLOAD_URL = process.env.UPLOAD_URL || '';  // 节点上传API地址，用于上传订阅或节点信息到外部服务
-const PROJECT_URL = process.env.PROJECT_URL || '';  // 项目外部访问URL，用于生成订阅链接和自动保活
-const AUTO_ACCESS = process.env.AUTO_ACCESS || false;  // 是否启用自动访问保活（防止隧道休眠），布尔值
-const FILE_PATH = process.env.FILE_PATH || './tmp';  // 临时文件存储路径，用于存放下载的二进制文件和配置文件
-const SUB_PATH = process.env.SUB_PATH || 'sub';  // 订阅路径名称，访问订阅的URL路径
-const PORT = process.env.SERVER_PORT || process.env.PORT || 3000;  // 内部HTTP服务端口
-const EXTERNAL_PORT = process.env.EXTERNAL_PORT || 7860;  // 外部代理服务器端口(与Argo端口合并)，接收所有流量并转发
-const UUID = process.env.UUID || '4b3e2bfe-bde1-5def-d035-0cb572bbd046';  // 用户ID，用于Xray协议认证
-const NEZHA_SERVER = process.env.NEZHA_SERVER || '';  // 哪吒监控服务器地址（哪吒v1域名:后面端口）
-const NEZHA_PORT = process.env.NEZHA_PORT || '';  // 哪吒监控服务器端口（哪吒v0端口，v1留空）
-const NEZHA_KEY = process.env.NEZHA_KEY || '';  // 哪吒监控密钥
-const ARGO_DOMAIN = process.env.ARGO_DOMAIN || '';  // Cloudflare Argo隧道自定义域名
-const ARGO_AUTH = process.env.ARGO_AUTH || '';  // Argo隧道认证信息（JSON格式或Token）
-const CFIP = process.env.CFIP || 'cdns.doon.eu.org';  // 节点IP显示地址（前端显示的IP，不是实际IP）
-const CFPORT = process.env.CFPORT || 443;  // 节点端口显示（前端显示的端口，不是实际端口）
-const NAME = process.env.NAME || '';  // 节点自定义名称，为空则使用自动生成的ISP信息
+const UPLOAD_URL = process.env.UPLOAD_URL || '';      // 节点或订阅自动上传地址，需填写部署Merge-sub项目后的首页地址，例如：https://merge.xxx.com
+const PROJECT_URL = process.env.PROJECT_URL || '';    // 项目访问地址，用于生成订阅链接，例如：https://your-project.herokuapp.com
+const AUTO_ACCESS = process.env.AUTO_ACCESS || false; // 是否自动访问项目URL保持活跃（true/false）
+const FILE_PATH = process.env.FILE_PATH || './tmp';   // 临时文件存储目录路径
+const SUB_PATH = process.env.SUB_PATH || 'sub';       // 订阅链接访问路径，例如访问订阅：https://your-domain.com/sub
+const PORT = process.env.SERVER_PORT || process.env.PORT || 3000; // 内部HTTP服务端口
+const EXTERNAL_PORT = process.env.EXTERNAL_PORT || 7860; // 外部代理服务器端口和Argo端口
+const UUID = process.env.UUID || '4b3e2bfe-bde1-5def-d035-0cb572bbd046'; // Xray用户UUID，建议更换
+const NEZHA_SERVER = process.env.NEZHA_SERVER || '';  // 哪吒监控服务器地址，哪吒v1格式：nezha.cc:5555
+const NEZHA_PORT = process.env.NEZHA_PORT || '';      // 哪吒v0监控服务器端口（可选）
+const NEZHA_KEY = process.env.NEZHA_KEY || '';        // 哪吒监控客户端密钥
+const ARGO_DOMAIN = process.env.ARGO_DOMAIN || '';    // Cloudflare Argo隧道域名
+const ARGO_AUTH = process.env.ARGO_AUTH || '';        // Argo隧道认证信息（Token或Json）
+const CFIP = process.env.CFIP || 'cdns.doon.eu.org';  // CDN回源IP地址
+const CFPORT = process.env.CFPORT || 443;             // CDN回源端口
+const NAME = process.env.NAME || '';                  // 节点名称前缀，例如：US-01
 
 // 创建运行文件夹
 if (!fs.existsSync(FILE_PATH)) {
@@ -446,7 +446,7 @@ uuid: ${UUID}`;
     console.error(`web running error: ${error}`);
   }
 
-  // 运行cloud-fared 
+  // 运行cloud-fared
   if (fs.existsSync(botPath)) {
     let args;
 
@@ -483,7 +483,6 @@ uuid: ${UUID}`;
           console.log('Tunnel is running successfully');
         } catch (error) {
           console.error('Tunnel failed to start');
-          // 可以在这里添加重试逻辑
         }
       }
     } catch (error) {
@@ -531,7 +530,7 @@ function getFilesForArchitecture(architecture) {
   return baseFiles;
 }
 
-// 获取固定隧道json 
+// 获取固定隧道json - 确保YAML配置正确生成
 function argoType() {
   if (!ARGO_AUTH || !ARGO_DOMAIN) {
     console.log("ARGO_DOMAIN or ARGO_AUTH variable is empty, use quick tunnels");
@@ -566,6 +565,27 @@ ingress:
   } else {
     console.log("ARGO_AUTH mismatch TunnelSecret, use token connect to tunnel");
   }
+}
+
+// 获取isp信息
+async function getMetaInfo() {
+  try {
+    const response1 = await axios.get('https://ipapi.co/json/', { timeout: 3000 });
+    if (response1.data && response1.data.country_code && response1.data.org) {
+      return `${response1.data.country_code}_${response1.data.org}`;
+    }
+  } catch (error) {
+      try {
+        // 备用 ip-api.com 获取isp
+        const response2 = await axios.get('http://ip-api.com/json/', { timeout: 3000 });
+        if (response2.data && response2.data.status === 'success' && response2.data.countryCode && response2.data.org) {
+          return `${response2.data.countryCode}_${response2.data.org}`;
+        }
+      } catch (error) {
+        // console.error('Backup API also failed');
+      }
+  }
+  return 'Unknown';
 }
 
 // 获取临时隧道domain
@@ -625,11 +645,8 @@ async function extractDomains() {
   }
 
   async function generateLinks(argoDomain) {
-    const metaInfo = execSync(
-      'curl -sm 5 https://speed.cloudflare.com/meta | awk -F\\" \'{print $26"-"$18}\' | sed -e \'s/ /_/g\'',
-      { encoding: 'utf-8' }
-    );
-    const ISP = metaInfo.trim();
+    // 获取ISP信息
+    const ISP = await getMetaInfo();
     const nodeName = NAME ? `${NAME}-${ISP}` : ISP;
 
     return new Promise((resolve) => {
@@ -762,7 +779,7 @@ async function AddVisitTask() {
   }
 }
 
-// 主运行逻辑 
+// 主运行逻辑
 async function startserver() {
   try {
     console.log('Starting server initialization...');
@@ -786,10 +803,8 @@ async function startserver() {
   }
 }
 
-// 启动HTTP服务（内部端口）
 app.listen(PORT, () => console.log(`HTTP service is running on internal port:${PORT}!`));
 
-// 启动主进程
 startserver().catch(error => {
   console.error('Unhandled error in startserver:', error);
 });
