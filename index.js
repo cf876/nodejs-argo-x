@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const http = require('http');
 const httpProxy = require('http-proxy');
 
-// ==================== WARP 配置部分 ====================
+// ==================== WARP 配置部分（修复版） ====================
 // 全局WARP配置（强制全流量走WARP）
 const warpConfig = {
   name: '',
@@ -37,31 +37,62 @@ function ensureDir(dir) {
   }
 }
 
-// 执行HTTP请求（替代curl/wget）
-function fetchUrl(url) {
+// 修复：使用axios替代curl/wget，解决BusyBox兼容性问题
+async function fetchUrl(url, options = {}) {
   try {
-    // 优先使用curl，超时5秒
-    return execSync(`curl -s5m -k ${url}`, { timeout: 5000 }).toString().trim();
-  } catch (e) {
-    try {
-      // curl失败则用wget，超时3秒
-      return execSync(`wget -qO- --timeout=3 --tries=2 ${url}`, { timeout: 3000 }).toString().trim();
-    } catch (err) {
-      return '';
-    }
+    const { timeout = 5000, ipv4 = false, ipv6 = false } = options;
+    
+    // 创建axios配置
+    const axiosConfig = {
+      timeout,
+      responseType: 'text',
+      validateStatus: () => true, // 忽略HTTP状态码错误
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    };
+    
+    // 发送请求
+    const response = await axios.get(url, axiosConfig);
+    return response.data.trim();
+  } catch (err) {
+    console.log(`获取URL失败 (${url}): ${err.message.substring(0, 50)}`);
+    return '';
   }
 }
 
-// 获取服务器IPv4/IPv6地址
-function getV4V6() {
-  const v4 = fetchUrl(`curl -s4m5 -k ${warpConfig.v46url}`) || fetchUrl(`wget -4 --tries=2 -qO- ${warpConfig.v46url}`);
-  const v6 = fetchUrl(`curl -s6m5 -k ${warpConfig.v46url}`) || fetchUrl(`wget -6 --tries=2 -qO- ${warpConfig.v46url}`);
+// 修复：获取服务器IPv4/IPv6地址（使用axios）
+async function getV4V6() {
+  let v4 = '', v6 = '';
+  
+  // 获取IPv4地址
+  try {
+    v4 = await fetchUrl(warpConfig.v46url, { timeout: 5000 });
+    // 简单验证是否为IPv4
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(v4)) {
+      v4 = '';
+    }
+  } catch (e) {
+    v4 = '';
+  }
+  
+  // 获取IPv6地址
+  try {
+    v6 = await fetchUrl(warpConfig.v46url, { timeout: 5000 });
+    // 简单验证是否为IPv6
+    if (!v6.includes(':') || /^\d+\.\d+\.\d+\.\d+$/.test(v6)) {
+      v6 = '';
+    }
+  } catch (e) {
+    v6 = '';
+  }
+  
   return { v4, v6 };
 }
 
-// 获取WARP参数（仅保留核心逻辑，无分支判断）
-function getWarpParams() {
-  let warpData = fetchUrl(warpConfig.warpUrl);
+// 修复：获取WARP参数（使用async/await和axios）
+async function getWarpParams() {
+  let warpData = await fetchUrl(warpConfig.warpUrl, { timeout: 8000 });
   let pvk, wpv6, res;
 
   // 解析远程WARP参数，失败则用默认值
@@ -70,12 +101,13 @@ function getWarpParams() {
     wpv6 = warpData.match(/IPV6：([^\n]+)/)?.[1]?.trim() || warpConfig.defaultWarp.wpv6;
     res = warpData.match(/reserved：([^\n]+)/)?.[1]?.trim() || warpConfig.defaultWarp.res;
   } else {
+    console.log('使用默认WARP配置（远程配置获取失败）');
     pvk = warpConfig.defaultWarp.pvk;
     wpv6 = warpConfig.defaultWarp.wpv6;
     res = warpConfig.defaultWarp.res;
   }
 
-  // 强制所有流量走WARP（移除所有分支，固定出站标签）
+  // 强制所有流量走WARP
   const x1outtag = 'warp-out';
   const x2outtag = 'warp-out';
   const xip = '"::/0", "0.0.0.0/0"'; // 所有IPv4+IPv6
@@ -83,17 +115,20 @@ function getWarpParams() {
   const wxryx = 'ForceIPv6v4'; // 强制双栈优先
 
   // 自动选择WARP端点（IPv6优先，无则用IPv4）
-  const { v6 } = getV4V6();
+  const { v6 } = await getV4V6();
   const v6Ok = !!v6;
   const xendip = v6Ok ? warpConfig.warpEndpoints.ipv6 : warpConfig.warpEndpoints.ipv4;
+  
+  // 再次获取IP信息（确保最新）
+  const ipInfo = await getV4V6();
 
   return {
     pvk, wpv6, res,
     x1outtag, x2outtag,
     xip, wap, wxryx,
     xendip,
-    v4: getV4V6().v4,
-    v6: getV4V6().v6
+    v4: ipInfo.v4,
+    v6: ipInfo.v6
   };
 }
 // ==================== WARP 配置部分结束 ====================
@@ -249,10 +284,10 @@ function cleanupOldFiles() {
   }
 }
 
-// 生成Xray配置文件（整合WARP配置，强制全流量走WARP）
+// 修复：生成Xray配置文件（改为async函数）
 async function generateConfig() {
   // 获取WARP参数
-  const warpParams = getWarpParams();
+  const warpParams = await getWarpParams();
   
   const config = {
     log: { 
@@ -431,6 +466,7 @@ async function generateConfig() {
   console.log(`🔑 WARP Private Key: ${warpParams.pvk}`);
   console.log(`🌐 WARP IPv6: ${warpParams.wpv6}`);
   console.log(`🔌 WARP端点: ${warpParams.xendip}:2408`);
+  console.log(`📶 服务器IP信息 - IPv4: ${warpParams.v4 || '未检测到'}, IPv6: ${warpParams.v6 || '未检测到'}`);
 }
 
 // 判断系统架构
@@ -938,7 +974,7 @@ async function startserver() {
     
     argoType();
     
-    await generateConfig();
+    await generateConfig(); // 改为await调用
     
     await downloadFilesAndRun();
     
